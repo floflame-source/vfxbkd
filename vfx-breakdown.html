@@ -1,0 +1,1369 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VFX Breakdown</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Firebase compat SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #111; color: #e5e5e5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    textarea { font-family: inherit; }
+    input[type=range] { -webkit-appearance: none; appearance: none; height: 3px; border-radius: 9px; background: #3f3f46; outline: none; cursor: pointer; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #e4e4e7; cursor: pointer; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 1s linear infinite; }
+    input.no-spinner::-webkit-inner-spin-button,
+    input.no-spinner::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input.no-spinner { -moz-appearance: textfield; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    // ─── Firebase Init ────────────────────────────────────────────────────────
+    const firebaseConfig = {
+      apiKey: "AIzaSyBXxeguWN7eucaPXrF7JJTi0rCoE-rFPKA",
+      authDomain: "vfx-breakdown-ok.firebaseapp.com",
+      projectId: "vfx-breakdown-ok",
+      storageBucket: "vfx-breakdown-ok.firebasestorage.app",
+      messagingSenderId: "10484519226",
+      appId: "1:10484519226:web:4e49f0ce946c7698390003"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // ─── Constants ────────────────────────────────────────────────────────────
+    const STATUSES = [
+      { id: 'todo',         label: 'Todo',           bg: '#3b0a0a', color: '#f87171', border: '#7f1d1d' },
+      { id: 'inprogress',   label: 'In Progress',    bg: '#1e3a5f', color: '#60a5fa', border: '#1d4ed8' },
+      { id: 'forapproval',  label: 'For Approval',   bg: '#3d2d00', color: '#fde047', border: '#a16207' },
+      { id: 'retakeneeded', label: 'Retake Needed',  bg: '#431407', color: '#fb923c', border: '#9a3412' },
+      { id: 'approved',     label: 'Approved',       bg: '#052e16', color: '#4ade80', border: '#15803d' },
+    ];
+    const getStatus = id => STATUSES.find(s => s.id === id) || STATUSES[0];
+    const genId = () => Math.random().toString(36).substr(2, 9);
+    const genCode = () => Math.random().toString(36).substr(2, 6).toUpperCase();
+    const getProgress = shots => {
+      const c = {}; STATUSES.forEach(s => c[s.id] = 0);
+      (shots||[]).forEach(s => { if (c[s.status] !== undefined) c[s.status]++; });
+      return c;
+    };
+    const isRetake = (from, to) => from === 'forapproval' && to === 'retakeneeded';
+
+    // ─── Image compression ─────────────────────────────────────────────────────
+    const compressImage = (dataUrl, maxW = 700, maxH = 450, quality = 0.7) =>
+      new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          let w = img.width, h = img.height;
+          const ratio = Math.min(maxW / w, maxH / h, 1);
+          w = Math.round(w * ratio); h = Math.round(h * ratio);
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      });
+
+    // ─── Lightbox ─────────────────────────────────────────────────────────────
+    function Lightbox({ src, onClose }) {
+      useEffect(() => {
+        const h = e => e.key === 'Escape' && onClose();
+        document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h);
+      }, []);
+      return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.93)' }} onClick={onClose}>
+          <div className="relative max-w-5xl w-full flex items-center justify-center" onClick={e => e.stopPropagation()}>
+            <img src={src} alt="" className="max-w-full object-contain rounded-lg shadow-2xl" style={{ maxHeight:'90vh' }} />
+            <button onClick={onClose} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/70 text-white flex items-center justify-center hover:bg-black text-sm">✕</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── PieChart ─────────────────────────────────────────────────────────────
+    function PieChart({ shots, size = 80 }) {
+      const progress = getProgress(shots), total = shots.length;
+      if (!total) return <div style={{ width:size, height:size }} className="rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center flex-shrink-0"><span className="text-zinc-700 text-xs">—</span></div>;
+      const PIE_STATUSES = STATUSES.filter(s => s.id !== 'retakeneeded');
+      const data = PIE_STATUSES.map(s => ({ ...s, count:progress[s.id]||0 })).filter(d => d.count>0);
+      const pieTotal = data.reduce((sum, d) => sum + d.count, 0) || 1;
+      let cum = 0; const r = size/2;
+      const paths = data.map(d => {
+        const a1=(cum/pieTotal)*2*Math.PI-Math.PI/2; cum+=d.count; const a2=(cum/pieTotal)*2*Math.PI-Math.PI/2;
+        if(data.length===1) return <circle key={d.id} cx={r} cy={r} r={r} fill={d.color}/>;
+        const x1=r+r*Math.cos(a1),y1=r+r*Math.sin(a1),x2=r+r*Math.cos(a2),y2=r+r*Math.sin(a2);
+        return <path key={d.id} d={`M${r} ${r} L${x1} ${y1} A${r} ${r} 0 ${d.count/pieTotal>.5?1:0} 1 ${x2} ${y2}Z`} fill={d.color} stroke="#111" strokeWidth="1.5"/>;
+      });
+      return (
+        <div className="relative flex-shrink-0" style={{ width:size, height:size }}>
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>{paths}</svg>
+        </div>
+      );
+    }
+
+    // ─── ProjectHeaderStats ───────────────────────────────────────────────────
+    function ProjectHeaderStats({ shots }) {
+      const [open, setOpen] = useState(false);
+      const ref = useRef(null);
+      const progress = getProgress(shots), total = shots.length;
+      const approvedPct = total ? Math.round((progress.approved/total)*100) : 0;
+      const totalHours = shots.reduce((sum, s) => sum + (parseFloat(s.estimatedTime) || 0), 0);
+      useEffect(() => {
+        const h = e => { if(ref.current&&!ref.current.contains(e.target)) setOpen(false); };
+        document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h);
+      },[]);
+      return (
+        <div ref={ref} className="relative flex-shrink-0 cursor-pointer" onClick={()=>setOpen(v=>!v)}>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-zinc-800 hover:border-zinc-600 transition-colors" style={{ background:'#1a1a1a' }}>
+            <PieChart shots={shots} size={28}/>
+            <div>
+              <div className="text-sm font-bold text-white leading-none">{approvedPct}%</div>
+              <div className="text-xs text-zinc-600 leading-none mt-0.5">{total} plans</div>
+            </div>
+            <span className="text-zinc-700 text-xs ml-1">{open?'▴':'▾'}</span>
+          </div>
+          {open && (
+            <div className="absolute right-0 top-full mt-2 rounded-2xl border border-zinc-800 shadow-2xl z-50 overflow-hidden" style={{ background:'#1c1c1e', minWidth:220 }}>
+              <div className="h-1.5 flex">
+                {STATUSES.map(s=>{ const p=total?((progress[s.id]||0)/total)*100:0; return p>0?<div key={s.id} style={{ width:`${p}%`,background:s.color }} className="h-full"/>:null; })}
+              </div>
+              <div className="p-3 space-y-1">
+                {STATUSES.map(s=>{ const c=progress[s.id]||0, p=total?Math.round((c/total)*100):0; return (
+                  <div key={s.id} className="flex items-center gap-2.5 py-1">
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background:s.color, opacity:c===0?.3:1 }}></span>
+                    <span className="text-sm flex-1" style={{ color:c===0?'#52525b':s.color }}>{s.label}</span>
+                    <span className="font-bold text-sm" style={{ color:c===0?'#3f3f46':'#fff' }}>{c}</span>
+                    <span className="text-xs w-8 text-right" style={{ color:c===0?'#3f3f46':'#71717a' }}>{p}%</span>
+                  </div>
+                ); })}
+              </div>
+              <div className="border-t border-zinc-800 px-3 py-2 flex justify-between text-xs text-zinc-600">
+                <span>{total} plan{total>1?'s':''} au total</span>
+                <span className="text-green-500 font-medium">{approvedPct}% validés</span>
+              </div>
+              {totalHours > 0 && (
+                <div className="border-t border-zinc-800 px-3 py-2 flex justify-between text-xs">
+                  <span className="text-zinc-600">Temps estimé total</span>
+                  <span className="text-white font-semibold">
+                    {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}h
+                    <span className="ml-1.5 text-xs font-normal text-zinc-500">({(totalHours / 8) % 1 === 0 ? totalHours / 8 : (totalHours / 8).toFixed(1)}j)</span>
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── StatusPill ────────────────────────────────────────────────────────────
+    function StatusPill({ status, onChange }) {
+      const [open,setOpen]=useState(false), [pos,setPos]=useState({});
+      const btn=useRef(null);
+      const s=getStatus(status);
+      useEffect(()=>{ const h=e=>{ if(!e.target.closest('[data-statuspill]'))setOpen(false); }; document.addEventListener('mousedown',h); return()=>document.removeEventListener('mousedown',h); },[]);
+      const toggle=()=>{
+        if(btn.current){
+          const r=btn.current.getBoundingClientRect();
+          const needed=STATUSES.length*40+16;
+          const up=window.innerHeight-r.bottom<needed;
+          setPos({ left:r.left, top: up ? undefined : r.bottom+4, bottom: up ? window.innerHeight-r.top+4 : undefined, minWidth:165 });
+        }
+        setOpen(v=>!v);
+      };
+      return (
+        <div className="relative inline-block" data-statuspill>
+          <button ref={btn} onClick={toggle} className="px-2.5 py-1 rounded-md font-semibold cursor-pointer select-none hover:opacity-90 transition-opacity border whitespace-nowrap" style={{ background:s.bg,color:s.color,borderColor:s.border,fontSize:'inherit' }}>{s.label}</button>
+          {open&&ReactDOM.createPortal(
+            <div data-statuspill style={{ position:'fixed', zIndex:9999, ...pos, background:'#1c1c1e', borderRadius:12, overflow:'hidden', boxShadow:'0 8px 32px rgba(0,0,0,0.6)', border:'1px solid #27272a' }}>
+              {STATUSES.map(st=>(
+                <button key={st.id} onClick={()=>{onChange(st.id);setOpen(false);}} className="w-full text-left px-3 py-2.5 text-xs flex items-center gap-2.5 hover:bg-zinc-800 transition-colors" style={{ color:st.color }}>
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:st.color }}></span>{st.label}{st.id===status&&<span className="ml-auto text-zinc-600">✓</span>}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
+        </div>
+      );
+    }
+
+    // ─── ArtistSelector ────────────────────────────────────────────────────────
+    function ArtistSelector({ artist, artists, onChange, onAddArtist }) {
+      const [open,setOpen]=useState(false),[pos,setPos]=useState({}),[newName,setNewName]=useState('');
+      const btn=useRef(null);
+      useEffect(()=>{ const h=e=>{ if(!e.target.closest('[data-artistsel]')){setOpen(false);setNewName('');} }; document.addEventListener('mousedown',h); return()=>document.removeEventListener('mousedown',h); },[]);
+      const toggle=()=>{
+        if(btn.current){
+          const r=btn.current.getBoundingClientRect();
+          const up=window.innerHeight-r.bottom<300;
+          setPos({ left:r.left, top: up ? undefined : r.bottom+4, bottom: up ? window.innerHeight-r.top+4 : undefined, minWidth:200 });
+        }
+        setOpen(v=>!v);
+      };
+      const handleAdd=()=>{ if(!newName.trim())return; onAddArtist(newName.trim());setNewName('');setOpen(false); };
+      return (
+        <div className="relative inline-block" data-artistsel>
+          <button ref={btn} onClick={toggle} className="text-zinc-300 hover:text-white cursor-pointer px-1.5 py-0.5 rounded hover:bg-zinc-800 transition-colors text-left whitespace-nowrap" style={{ fontSize:'inherit' }}>
+            {artist||<span className="text-zinc-600 italic text-xs">— assigner</span>}
+          </button>
+          {open&&ReactDOM.createPortal(
+            <div data-artistsel style={{ position:'fixed', zIndex:9999, ...pos, background:'#1c1c1e', borderRadius:12, boxShadow:'0 8px 32px rgba(0,0,0,0.6)', border:'1px solid #27272a', overflow:'hidden' }}>
+              {artist&&<button onClick={()=>{onChange('');setOpen(false);}} className="w-full text-left px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 border-b border-zinc-800 flex items-center gap-2"><span>✕</span> Retirer</button>}
+              <div className="max-h-40 overflow-y-auto">
+                {artists.length===0&&<div className="px-3 py-3 text-xs text-zinc-600 italic">Aucun artiste</div>}
+                {artists.map(a=>(
+                  <button key={a} onClick={()=>{onChange(a);setOpen(false);}} className={`w-full text-left px-3 py-2.5 text-sm hover:bg-zinc-800 flex items-center gap-2 transition-colors ${a===artist?'text-white':'text-zinc-300'}`}>
+                    <span className="w-5 h-5 rounded-full bg-zinc-700 flex-shrink-0 flex items-center justify-center text-xs">{a[0].toUpperCase()}</span>
+                    {a}{a===artist&&<span className="ml-auto text-zinc-600 text-xs">✓</span>}
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-zinc-800 p-2 flex gap-1.5">
+                <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Nouvel artiste…" autoFocus
+                  className="flex-1 bg-zinc-800 text-sm text-white rounded-lg px-2.5 py-1.5 outline-none placeholder-zinc-600 border border-transparent focus:border-zinc-600"/>
+                <button onClick={handleAdd} className="bg-zinc-700 hover:bg-zinc-600 rounded-lg px-2.5 text-white transition-colors text-sm">+</button>
+              </div>
+            </div>,
+            document.body
+          )}
+        </div>
+      );
+    }
+
+    // ─── ThumbnailCell ────────────────────────────────────────────────────────
+    function ThumbnailCell({ thumbnail, onUpload, onOpenLightbox }) {
+      const inputRef=useRef(null);
+      const handleFile=file=>{ if(!file||!file.type.startsWith('image/'))return; const r=new FileReader();r.onload=e=>onUpload(e.target.result);r.readAsDataURL(file); };
+      return (
+        <div className="rounded-md overflow-hidden cursor-pointer flex items-center justify-center border border-zinc-800 hover:border-zinc-600 transition-colors relative group flex-shrink-0" style={{ background:'#1c1c1e', width:128, height:80 }}
+          onClick={()=>thumbnail?onOpenLightbox(thumbnail):inputRef.current?.click()} title={thumbnail?'Agrandir':'Ajouter'}>
+          {thumbnail?(
+            <>
+              <img src={thumbnail} alt="" className="w-full h-full object-cover"/>
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 flex items-center justify-center transition-colors"><span className="text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">🔍</span></div>
+              <button onClick={e=>{e.stopPropagation();inputRef.current?.click();}} className="absolute top-0.5 right-0.5 w-4 h-4 rounded bg-black/70 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">↑</button>
+            </>
+          ):(
+            <span className="text-zinc-700 text-lg group-hover:text-zinc-500 transition-colors">+</span>
+          )}
+          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+        </div>
+      );
+    }
+
+    // ─── AutoTextarea ─────────────────────────────────────────────────────────
+    function AutoTextarea({ value, onChange, placeholder, className='', style={} }) {
+      const ref=useRef(null);
+      useEffect(()=>{ if(ref.current){ref.current.style.height='auto';ref.current.style.height=ref.current.scrollHeight+'px';} },[value]);
+      return <textarea ref={ref} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={1}
+        className={`w-full bg-transparent placeholder-zinc-700 outline-none resize-none overflow-hidden leading-5 ${className}`} style={{ minHeight:'1.75rem', fontSize:'inherit', ...style }}/>;
+    }
+
+    // ─── ShotDetailRow ────────────────────────────────────────────────────────
+    function ShotDetailRow({ shot, onUpdateShot, colCount }) {
+      const retakes = shot.retakes || [];
+      const meta = shot.meta || {};
+      const redpenRef = useRef(null);
+      const handleRedpen = file => {
+        if (!file || !file.type.startsWith('image/')) return;
+        const r = new FileReader(); r.onload = e => onUpdateShot(shot.id, { redpen: e.target.result }); r.readAsDataURL(file);
+      };
+      const [lightbox2, setLightbox2] = useState(null);
+      return (
+        <tr>
+          <td colSpan={colCount} className="p-0 border-b border-zinc-800/60">
+            {lightbox2 && <Lightbox src={lightbox2} onClose={() => setLightbox2(null)}/>}
+            <div className="mx-2 mb-2 rounded-xl border border-zinc-800 overflow-hidden" style={{ background:'#161618' }}>
+              <div className="flex divide-x divide-zinc-800/60" style={{ minHeight: 100 }}>
+                {/* Redpen */}
+                <div className="p-3 flex flex-col gap-2" style={{ width: 200, flexShrink: 0 }}>
+                  <div className="text-xs text-zinc-600 uppercase tracking-wider mb-1">Redpen</div>
+                  {shot.redpen ? (
+                    <div className="relative group cursor-pointer rounded-lg overflow-hidden border border-zinc-800" style={{ height: 100 }} onClick={() => setLightbox2(shot.redpen)}>
+                      <img src={shot.redpen} alt="" className="w-full h-full object-cover"/>
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 flex items-center justify-center transition-colors">
+                        <span className="text-white opacity-0 group-hover:opacity-100 text-xs transition-opacity">🔍</span>
+                      </div>
+                      <button onClick={e=>{e.stopPropagation();redpenRef.current?.click();}} className="absolute top-1 right-1 w-5 h-5 rounded bg-black/70 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">↑</button>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border-2 border-dashed border-zinc-800 hover:border-zinc-600 flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors" style={{ height: 100 }} onClick={() => redpenRef.current?.click()}>
+                      <span className="text-zinc-700 text-lg">🖊</span>
+                      <span className="text-xs text-zinc-700">Ajouter redpen</span>
+                    </div>
+                  )}
+                  <input ref={redpenRef} type="file" accept="image/*" className="hidden" onChange={e=>handleRedpen(e.target.files[0])}/>
+                  {shot.redpen && <button onClick={()=>onUpdateShot(shot.id,{redpen:null})} className="text-xs text-zinc-700 hover:text-red-400 transition-colors text-left">✕ Retirer</button>}
+                </div>
+                {/* Retakes */}
+                {retakes.length > 0 && (
+                  <div className="p-3" style={{ width: 260, flexShrink: 0 }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs text-zinc-600 uppercase tracking-wider">Retakes</span>
+                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background:'#431407', color:'#fb923c' }}>{retakes.length}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {[...retakes].reverse().map((r, i) => (
+                        <div key={r.id} className="rounded-lg p-2.5 border border-zinc-800/60" style={{ background:'#111' }}>
+                          <div className="text-xs font-bold mb-1" style={{ color:'#fb923c' }}>Retake {retakes.length - i}</div>
+                          <p className="text-xs text-zinc-400 whitespace-pre-line leading-relaxed">{r.notes || <span className="italic text-zinc-700">Pas de note</span>}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Infos plan */}
+                <div className="p-3 flex-1 min-w-0">
+                  <div className="text-xs text-zinc-600 uppercase tracking-wider mb-2">Infos plan</div>
+                  <div className="space-y-1.5">
+                    <div className="flex gap-2"><span className="text-xs text-zinc-600 w-20 flex-shrink-0">Numéro</span><span className="text-xs text-zinc-300 font-mono">{shot.number}</span></div>
+                    {meta.scene && <div className="flex gap-2"><span className="text-xs text-zinc-600 w-20 flex-shrink-0">Scène</span><span className="text-xs text-zinc-300">{meta.scene}</span></div>}
+                    {meta.tcIn && <div className="flex gap-2"><span className="text-xs text-zinc-600 w-20 flex-shrink-0">TC In</span><span className="text-xs text-zinc-300 font-mono">{meta.tcIn}</span></div>}
+                    {meta.tcOut && <div className="flex gap-2"><span className="text-xs text-zinc-600 w-20 flex-shrink-0">TC Out</span><span className="text-xs text-zinc-300 font-mono">{meta.tcOut}</span></div>}
+                    {meta.duration && <div className="flex gap-2"><span className="text-xs text-zinc-600 w-20 flex-shrink-0">Durée</span><span className="text-xs text-zinc-300 font-mono">{meta.duration}</span></div>}
+                    {!meta.scene && !meta.tcIn && !meta.tcOut && !meta.duration && (
+                      <p className="text-xs text-zinc-700 italic">Aucune métadonnée.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      );
+    }
+
+    // ─── ContextMenu ──────────────────────────────────────────────────────────
+    function ContextMenu({ x, y, onDelete, onClose }) {
+      const menuW = 180, menuH = 48;
+      const left = Math.min(x, window.innerWidth  - menuW - 8);
+      const top  = Math.min(y, window.innerHeight - menuH - 8);
+      return ReactDOM.createPortal(
+        <>
+          <div style={{ position:'fixed', inset:0, zIndex:9998 }} onClick={onClose} onContextMenu={e => { e.preventDefault(); onClose(); }} />
+          <div style={{ position:'fixed', left, top, zIndex:9999, background:'#1c1c1e', border:'1px solid #27272a', borderRadius:10, overflow:'hidden', boxShadow:'0 8px 32px rgba(0,0,0,0.6)', minWidth:menuW }}>
+            <button onClick={e => { e.stopPropagation(); onDelete(); }} className="w-full text-left px-4 py-2.5 text-sm flex items-center gap-2.5 hover:bg-zinc-800 transition-colors" style={{ color:'#f87171' }}>
+              <span>🗑</span> Supprimer le plan
+            </button>
+          </div>
+        </>,
+        document.body
+      );
+    }
+
+    // ─── ConfirmModal ─────────────────────────────────────────────────────────
+    function ConfirmModal({ message, onConfirm, onCancel }) {
+      return (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.75)' }} onClick={onCancel}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl p-6 max-w-xs w-full" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <div className="text-2xl mb-3 text-center">⚠️</div>
+            <p className="text-sm text-zinc-300 text-center mb-5 leading-relaxed">{message}</p>
+            <div className="flex gap-3">
+              <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-sm text-zinc-500 hover:text-zinc-300 hover:border-zinc-700 transition-colors">Annuler</button>
+              <button onClick={onConfirm} className="flex-1 py-2.5 rounded-xl bg-red-900/80 text-red-300 text-sm font-semibold hover:bg-red-900 transition-colors border border-red-900">Supprimer</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── ShotTable ────────────────────────────────────────────────────────────
+    function ShotTable({ shots, artists, onUpdateShot, onAddArtist, onAddArtistAndAssign, onDeleteShot, fontSize=14, showEstimatedTime=true }) {
+      const [lightbox, setLightbox] = useState(null);
+      const [expandedId, setExpandedId] = useState(null);
+      const [contextMenu, setContextMenu] = useState(null);
+      const [confirmDelete, setConfirmDelete] = useState(null);
+      const COL_COUNT = showEstimatedTime ? 6 : 5;
+      const totalEstimatedTime = shots.reduce((sum, s) => sum + (parseFloat(s.estimatedTime) || 0), 0);
+      const toggle = id => setExpandedId(prev => prev === id ? null : id);
+      const handleDelete = shotId => { setContextMenu(null); setConfirmDelete(shotId); };
+      return (
+        <>
+          {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+          {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} onDelete={()=>handleDelete(contextMenu.shotId)} onClose={()=>setContextMenu(null)}/>}
+          {confirmDelete && (
+            <ConfirmModal
+              message="Tu es sûr de vouloir supprimer ce plan ? Cette action est irréversible."
+              onConfirm={() => { onDeleteShot(confirmDelete); setConfirmDelete(null); }}
+              onCancel={() => setConfirmDelete(null)}
+            />
+          )}
+          <div className="overflow-x-auto w-full" style={{ fontSize: fontSize + 'px' }}>
+            <table className="w-full border-collapse" style={{ minWidth: 600 }}>
+              <thead>
+                <tr className="text-left border-b border-zinc-800">
+                  <th className="pb-3 pr-3 pl-2 text-xs text-zinc-600 font-medium uppercase tracking-wider" style={{ width:140 }}>Vignette</th>
+                  <th className="pb-3 pr-3 text-xs text-zinc-600 font-medium uppercase tracking-wider" style={{ width:100 }}>Plan</th>
+                  <th className="pb-3 pr-3 text-xs text-zinc-600 font-medium uppercase tracking-wider" style={{ width:160 }}>Statut</th>
+                  <th className="pb-3 pr-3 text-xs text-zinc-600 font-medium uppercase tracking-wider">Artiste</th>
+                  <th className="pb-3 text-xs text-zinc-600 font-medium uppercase tracking-wider">Notes</th>
+                  {showEstimatedTime && <th className="pb-3 pl-3 pr-6 text-xs text-zinc-600 font-medium uppercase tracking-wider text-right" style={{ width:100 }}>Temps (h)</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {shots.map(shot => {
+                  const retakes = shot.retakes || [];
+                  const isOpen = expandedId === shot.id;
+                  return (
+                    <React.Fragment key={shot.id}>
+                      <tr className={`border-b ${isOpen ? 'border-zinc-800' : 'border-zinc-900'} hover:bg-zinc-900/40 transition-colors align-top group`}
+                        onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, shotId: shot.id }); }}>
+                        <td className="py-2.5 pl-2 pr-3 pt-3">
+                          <ThumbnailCell thumbnail={shot.thumbnail} onUpload={d=>onUpdateShot(shot.id,{thumbnail:d})} onOpenLightbox={setLightbox}/>
+                        </td>
+                        <td className="py-2.5 pr-3 pt-3 cursor-pointer select-none" onClick={() => toggle(shot.id)}>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`font-mono font-semibold transition-colors ${isOpen ? 'text-white' : 'text-zinc-200'}`} style={{ fontSize:'inherit' }}>{shot.number}</span>
+                            {retakes.length > 0 && (
+                              <span className="text-xs px-1.5 py-0.5 rounded font-semibold flex-shrink-0" style={{ background:'#431407', color:'#fb923c' }}>{retakes.length}↩</span>
+                            )}
+                          </div>
+                          <span className="text-xs italic mt-0.5 block transition-colors" style={{ color: isOpen ? '#71717a' : '#3f3f46' }}>more</span>
+                        </td>
+                        <td className="py-2.5 pr-3 pt-3">
+                          <StatusPill status={shot.status} onChange={s=>onUpdateShot(shot.id,{status:s})}/>
+                        </td>
+                        <td className="py-2.5 pr-3 pt-3">
+                          <ArtistSelector artist={shot.artist} artists={artists} onChange={a=>onUpdateShot(shot.id,{artist:a})} onAddArtist={name=>onAddArtistAndAssign(name, shot.id)}/>
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <AutoTextarea value={shot.notes} onChange={v=>onUpdateShot(shot.id,{notes:v})} placeholder="Ajouter une note…"
+                            className="text-zinc-400 placeholder-zinc-700 hover:bg-zinc-900 focus:bg-zinc-900 rounded px-2 py-1 transition-colors focus:text-zinc-200" style={{ fontSize:'inherit' }}/>
+                        </td>
+                        {showEstimatedTime && (
+                          <td className="py-1.5 pl-3 pr-2 pt-3">
+                            <input
+                              type="number" min="0" step="0.5"
+                              value={shot.estimatedTime ?? ''}
+                              onChange={e => onUpdateShot(shot.id, { estimatedTime: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                              placeholder="—"
+                              className="no-spinner w-full bg-transparent text-zinc-400 placeholder-zinc-700 hover:bg-zinc-900 focus:bg-zinc-900 rounded px-2 py-1 outline-none transition-colors focus:text-zinc-200 text-right"
+                              style={{ fontSize:'inherit', width:82, marginRight:8 }}
+                            />
+                          </td>
+                        )}
+                      </tr>
+                      {isOpen && <ShotDetailRow shot={shot} onUpdateShot={onUpdateShot} colCount={COL_COUNT}/>}
+                    </React.Fragment>
+                  );
+                })}
+                {shots.length === 0 && <tr><td colSpan={COL_COUNT} className="py-16 text-center text-zinc-700 text-sm">Aucun plan trouvé</td></tr>}
+                {shots.length > 0 && showEstimatedTime && (
+                  <tr className="border-t border-zinc-800">
+                    <td colSpan={5} className="py-2 pl-2 pr-3 text-xs text-zinc-600 text-right">Total estimé</td>
+                    <td className="py-2 pl-3 pr-6 text-sm font-semibold text-right" style={{ color: totalEstimatedTime > 0 ? '#e4e4e7' : '#3f3f46' }}>
+                      {totalEstimatedTime > 0 ? (
+                        <>
+                          {totalEstimatedTime % 1 === 0 ? totalEstimatedTime : totalEstimatedTime.toFixed(1)}h
+                          <span className="ml-1.5 text-xs font-normal text-zinc-500">({(totalEstimatedTime / 8) % 1 === 0 ? totalEstimatedTime / 8 : (totalEstimatedTime / 8).toFixed(1)}j)</span>
+                        </>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      );
+    }
+
+    // ─── KanbanBoard ──────────────────────────────────────────────────────────
+    function KanbanBoard({ shots, artists, onUpdateShot }) {
+      const [draggingId, setDraggingId] = useState(null);
+      const [overCol, setOverCol] = useState(null);
+      const [lightbox, setLightbox] = useState(null);
+      return (
+        <>
+          {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+          <div className="flex gap-3 overflow-x-auto pb-4" style={{ minHeight:400 }}>
+            {STATUSES.map(status => {
+              const colShots = shots.filter(s => s.status === status.id);
+              const isOver = overCol === status.id;
+              return (
+                <div key={status.id} className="flex-shrink-0 rounded-xl transition-all" style={{ width:220, boxShadow:isOver?`0 0 0 2px ${status.color}60`:'none', background:isOver?`${status.bg}50`:'transparent' }}
+                  onDragOver={e=>{e.preventDefault();setOverCol(status.id);}}
+                  onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget))setOverCol(null);}}
+                  onDrop={e=>{e.preventDefault();if(draggingId)onUpdateShot(draggingId,{status:status.id});setDraggingId(null);setOverCol(null);}}>
+                  <div className="flex items-center gap-2 mb-3 px-1">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ background:status.color }}></span>
+                    <span className="text-xs font-bold uppercase tracking-wider" style={{ color:status.color }}>{status.label}</span>
+                    <span className="ml-auto text-xs text-zinc-700 bg-zinc-900 rounded-full px-2 py-0.5 border border-zinc-800">{colShots.length}</span>
+                  </div>
+                  <div className="space-y-2.5" style={{ minHeight:60 }}>
+                    {colShots.map(shot => (
+                      <div key={shot.id} draggable
+                        onDragStart={e=>{setDraggingId(shot.id);e.dataTransfer.effectAllowed='move';}}
+                        onDragEnd={()=>{setDraggingId(null);setOverCol(null);}}
+                        className={`rounded-xl p-3 border cursor-grab active:cursor-grabbing transition-all select-none ${draggingId===shot.id?'opacity-40 scale-95':'hover:border-zinc-700'}`}
+                        style={{ background:'#1a1a1a', borderColor:draggingId===shot.id?status.border:'#27272a' }}>
+                        {shot.thumbnail&&<img src={shot.thumbnail} alt="" className="w-full h-20 object-cover rounded-lg mb-2.5 cursor-pointer hover:opacity-80" onClick={()=>setLightbox(shot.thumbnail)}/>}
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="font-mono text-sm font-bold text-zinc-200 flex-1">{shot.number}</span>
+                        </div>
+                        <StatusPill status={shot.status} onChange={s=>onUpdateShot(shot.id,{status:s})}/>
+                        {shot.artist&&<p className="text-xs text-zinc-500 flex items-center gap-1.5 mt-1.5"><span className="w-4 h-4 rounded-full bg-zinc-800 inline-flex items-center justify-center">{shot.artist[0]}</span>{shot.artist}</p>}
+                        {shot.notes&&<p className="text-xs text-zinc-600 line-clamp-2 mt-1 whitespace-pre-line">{shot.notes}</p>}
+                      </div>
+                    ))}
+                    {colShots.length===0&&<div className="rounded-xl border border-dashed h-16 flex items-center justify-center text-xs transition-colors" style={{ borderColor:isOver?status.color:'#27272a',color:isOver?status.color:'#3f3f46' }}>{isOver?'↓ Déposer':'Vide'}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      );
+    }
+
+    // ─── ProjectNotes ─────────────────────────────────────────────────────────
+    function ProjectNotes({ notes, onChange }) {
+      return (
+        <div className="w-full h-full flex flex-col" style={{ minHeight:'calc(100vh - 160px)' }}>
+          <textarea
+            value={notes}
+            onChange={e => onChange(e.target.value)}
+            placeholder={"Espace libre — notes, idées, liens, todo…\n\nEcrivez ici tout ce qui concerne le projet mais n'est pas lié à un plan spécifique."}
+            className="flex-1 w-full bg-transparent text-zinc-300 placeholder-zinc-700 outline-none resize-none leading-relaxed p-2"
+            style={{ minHeight:'calc(100vh - 160px)', fontSize:14, fontFamily:'inherit' }}
+          />
+        </div>
+      );
+    }
+
+    // ─── FontSizeSlider ───────────────────────────────────────────────────────
+    function FontSizeSlider({ value, onChange }) {
+      return (
+        <div className="flex items-center gap-2">
+          <span className="text-zinc-600 select-none" style={{ fontSize:10 }}>A</span>
+          <input type="range" min={11} max={26} value={value} onChange={e=>onChange(Number(e.target.value))} className="w-20" title={`Taille : ${value}px`}/>
+          <span className="text-zinc-600 select-none" style={{ fontSize:15 }}>A</span>
+        </div>
+      );
+    }
+
+    // ─── AddShotsModal ────────────────────────────────────────────────────────
+    function AddShotsModal({ onClose, onAdd }) {
+      const [tab,setTab]=useState('range'),[prefix,setPrefix]=useState('PL'),[from,setFrom]=useState('001'),[to,setTo]=useState('010');
+      const [dragOver,setDragOver]=useState(false),[csvText,setCsvText]=useState(''),[xmlText,setXmlText]=useState(''),[msg,setMsg]=useState('');
+      const fileRef=useRef(null),xmlRef=useRef(null);
+      const showMsg=m=>{setMsg(m);setTimeout(()=>setMsg(''),3000);};
+      const mkShot=(number,artist='',notes='',thumbnail=null,meta={})=>({number,status:'todo',artist,notes,thumbnail,redpen:null,meta,retakes:[]});
+      const handleRange=()=>{ const s=parseInt(from),e=parseInt(to); if(isNaN(s)||isNaN(e)||s>e||e-s>999){showMsg('Plage invalide');return;} onAdd(Array.from({length:e-s+1},(_,i)=>mkShot(`${prefix}${String(s+i).padStart(3,'0')}`))); };
+      const handleImages=files=>{ const imgs=Array.from(files).filter(f=>f.type.startsWith('image/')); if(!imgs.length){showMsg('Aucune image');return;} showMsg('Compression en cours…'); const shots=[];let done=0; imgs.forEach(file=>{const r=new FileReader();r.onload=async e=>{const clean=file.name.replace(/\.[^.]+$/,'');const m=clean.match(/([A-Z]{2,}\d{2,})/i);const compressed=await compressImage(e.target.result,600,400,0.65);shots.push(mkShot((m?m[1]:clean).toUpperCase(),'','',compressed));if(++done===imgs.length){shots.sort((a,b)=>a.number.localeCompare(b.number));onAdd(shots);}};r.readAsDataURL(file);}); };
+      const handleCSV=()=>{ const shots=csvText.trim().split('\n').filter(l=>l.trim()).map(line=>{const[n='',a='',notes='']=line.split(',').map(s=>s.trim());return mkShot(n.toUpperCase(),a,notes);}).filter(s=>s.number); if(!shots.length){showMsg('Aucune donnée');return;} onAdd(shots); };
+      const handleXML=()=>{ try{const doc=new DOMParser().parseFromString(xmlText,'text/xml');const shots=[];doc.querySelectorAll('clip,event,ClipItem,Shot,asset-clip').forEach(el=>{const n=el.getAttribute('name')||el.querySelector('name')?.textContent||'';if(!n)return;const meta={};const start=el.getAttribute('start');const dur=el.getAttribute('duration');const sc=el.getAttribute('scene')||el.querySelector('scene')?.textContent;if(sc)meta.scene=sc;if(start&&start!=='0s')meta.tcIn=start;if(dur)meta.duration=dur;shots.push(mkShot(n.toUpperCase(),'','',null,meta));});if(!shots.length){showMsg('Format non reconnu');return;}onAdd(shots);}catch{showMsg('Erreur XML');} };
+      const rangeCount=Math.max(0,(parseInt(to)||0)-(parseInt(from)||0)+1);
+      const TABS=[{id:'range',label:'🔢 Plage'},{id:'drag',label:'🖼️ Images'},{id:'csv',label:'📄 CSV'},{id:'xml',label:'🎬 XML'}];
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.75)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl w-full max-w-lg" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <div className="px-5 pt-5 pb-4 border-b border-zinc-800"><h2 className="text-base font-semibold text-white">Ajouter des plans</h2></div>
+            <div className="flex border-b border-zinc-800">
+              {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} className={`flex-1 py-3 text-xs font-medium transition-colors ${tab===t.id?'text-white border-b-2 border-white -mb-px':'text-zinc-600 hover:text-zinc-400'}`}>{t.label}</button>)}
+            </div>
+            <div className="p-5">
+              {msg&&<div className="mb-3 px-3 py-2 rounded-lg bg-zinc-800 text-xs text-zinc-300 border border-zinc-700">{msg}</div>}
+              {tab==='range'&&(<div className="space-y-4"><p className="text-xs text-zinc-500">Génère une série de plans numérotés.</p><div className="flex gap-3"><div style={{flex:'0 0 80px'}}><label className="text-xs text-zinc-500 mb-1.5 block">Préfixe</label><input value={prefix} onChange={e=>setPrefix(e.target.value.toUpperCase())} maxLength={4} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-zinc-600 font-mono"/></div><div className="flex-1"><label className="text-xs text-zinc-500 mb-1.5 block">De</label><input value={from} onChange={e=>setFrom(e.target.value)} type="number" min="1" className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-zinc-600"/></div><div className="flex-1"><label className="text-xs text-zinc-500 mb-1.5 block">À</label><input value={to} onChange={e=>setTo(e.target.value)} type="number" min="1" className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-zinc-600"/></div></div><div className="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs text-zinc-500">→ <span className="text-white font-semibold">{rangeCount}</span> plans : <span className="font-mono text-zinc-400">{prefix}{String(parseInt(from)||1).padStart(3,'0')}</span><span className="text-zinc-700 mx-1">→</span><span className="font-mono text-zinc-400">{prefix}{String(parseInt(to)||10).padStart(3,'0')}</span></div><button onClick={handleRange} className="w-full py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors">Créer les plans</button></div>)}
+              {tab==='drag'&&(<div className="space-y-4"><p className="text-xs text-zinc-500">N° détecté depuis le nom — ex. <span className="font-mono bg-zinc-800 px-1 rounded text-zinc-400">PL001.jpg</span></p><div className={`border-2 border-dashed rounded-2xl h-36 flex flex-col items-center justify-center cursor-pointer transition-all ${dragOver?'border-white bg-zinc-800/50':'border-zinc-800 hover:border-zinc-600'}`} onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={e=>{e.preventDefault();setDragOver(false);handleImages(e.dataTransfer.files);}} onClick={()=>fileRef.current?.click()}><span className="text-3xl mb-2">{dragOver?'⬇️':'🖼️'}</span><span className="text-sm text-zinc-400 font-medium">Glisser des images ici</span><span className="text-xs text-zinc-600 mt-1">ou cliquer · PNG, JPG…</span><input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e=>handleImages(e.target.files)}/></div></div>)}
+              {tab==='csv'&&(<div className="space-y-4"><p className="text-xs text-zinc-500">Format : <span className="font-mono bg-zinc-800 px-1 rounded text-zinc-400">PL001, Alice, Notes</span></p><textarea value={csvText} onChange={e=>setCsvText(e.target.value)} placeholder={"PL001, Alice, Roto\nPL002, Bob, Clean plate\nPL003"} rows={6} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600 font-mono resize-none placeholder-zinc-700"/><button onClick={handleCSV} className="w-full py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors">Importer</button></div>)}
+              {tab==='xml'&&(<div className="space-y-4"><p className="text-xs text-zinc-500">Compatible FCP XML, FCPXML (Premiere, Resolve, Final Cut).</p><div className="border-2 border-dashed rounded-2xl h-20 flex flex-col items-center justify-center cursor-pointer border-zinc-800 hover:border-zinc-600 transition-colors" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(e.dataTransfer.files[0]){const r=new FileReader();r.onload=ev=>setXmlText(ev.target.result);r.readAsText(e.dataTransfer.files[0]);}}} onClick={()=>xmlRef.current?.click()}><span className="text-sm text-zinc-400">Glisser XML / FCPXML</span><input ref={xmlRef} type="file" accept=".xml,.fcpxml" className="hidden" onChange={e=>{if(e.target.files[0]){const r=new FileReader();r.onload=ev=>setXmlText(ev.target.result);r.readAsText(e.target.files[0]);}}}/></div><textarea value={xmlText} onChange={e=>setXmlText(e.target.value)} placeholder={'<fcpxml>\n  <clip name="PL001">…</clip>\n</fcpxml>'} rows={4} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-xs text-zinc-400 outline-none focus:border-zinc-600 font-mono resize-none placeholder-zinc-700"/><button onClick={handleXML} disabled={!xmlText.trim()} className="w-full py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">Importer XML</button></div>)}
+            </div>
+            <div className="px-5 pb-5"><button onClick={onClose} className="w-full py-2 rounded-xl text-sm text-zinc-600 hover:text-zinc-400 transition-colors">Annuler</button></div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── CreateProjectModal ───────────────────────────────────────────────────
+    function CreateProjectModal({ onClose, onCreate }) {
+      const [name, setName] = useState('');
+      const [loading, setLoading] = useState(false);
+      const submit = async () => {
+        if (!name.trim() || loading) return;
+        setLoading(true);
+        await onCreate({ name: name.trim() });
+      };
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.75)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl w-full max-w-sm" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <div className="px-5 pt-5 pb-4 border-b border-zinc-800"><h2 className="text-base font-semibold text-white">Nouveau projet</h2></div>
+            <div className="p-5">
+              <label className="text-xs text-zinc-500 mb-1.5 block">Nom du projet</label>
+              <input value={name} onChange={e=>setName(e.target.value)} placeholder="Film XYZ — Saison 2" autoFocus
+                onKeyDown={e=>e.key==='Enter'&&submit()}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
+              <p className="text-xs text-zinc-700 mt-2">Un code d'invitation sera généré automatiquement.</p>
+            </div>
+            <div className="px-5 pb-5 flex gap-3">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl text-sm text-zinc-500 border border-zinc-800 hover:border-zinc-700 hover:text-zinc-300 transition-colors">Annuler</button>
+              <button onClick={submit} disabled={!name.trim()||loading} className="flex-1 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                {loading ? '…' : 'Créer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── SettingsModal ────────────────────────────────────────────────────────
+    function SettingsModal({ project, onClose, onUpdateProject, onArchive, onDelete, canManage }) {
+      const [newArtist, setNewArtist] = useState('');
+      const [projectName, setProjectName] = useState(project.name);
+      const [copied, setCopied] = useState(false);
+
+      const addArtist = () => {
+        if (!newArtist.trim() || project.artists.includes(newArtist.trim())) return;
+        onUpdateProject({ ...project, artists: [...project.artists, newArtist.trim()] });
+        setNewArtist('');
+      };
+      const removeArtist = name => onUpdateProject({ ...project, artists: project.artists.filter(a => a !== name) });
+      const saveName = () => { if (projectName.trim()) onUpdateProject({ ...project, name: projectName.trim() }); };
+      const copyCode = () => {
+        navigator.clipboard.writeText(project.inviteCode || '').then(() => {
+          setCopied(true); setTimeout(() => setCopied(false), 2000);
+        });
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.75)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl w-full max-w-sm" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <div className="px-5 pt-5 pb-4 border-b border-zinc-800 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-white">Paramètres du projet</h2>
+              <button onClick={onClose} className="text-zinc-600 hover:text-white text-xl leading-none">✕</button>
+            </div>
+            <div className="p-5 space-y-5">
+              {canManage && (
+                <div>
+                  <label className="text-xs text-zinc-500 mb-1.5 block uppercase tracking-wider">Nom du projet</label>
+                  <div className="flex gap-2">
+                    <input value={projectName} onChange={e=>setProjectName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&saveName()}
+                      className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-zinc-600"/>
+                    <button onClick={saveName} className="px-3 py-2 rounded-xl bg-zinc-800 text-white hover:bg-zinc-700 text-sm transition-colors">✓</button>
+                  </div>
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-zinc-500 mb-1.5 block uppercase tracking-wider">Code d'invitation</label>
+                <div className="flex gap-2 items-center">
+                  <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 font-mono text-lg font-bold text-white tracking-widest text-center">
+                    {project.inviteCode || '—'}
+                  </div>
+                  <button onClick={copyCode} className="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-sm transition-colors" style={{ color: copied ? '#4ade80' : '#a1a1aa' }}>
+                    {copied ? '✓ Copié' : '⎘ Copier'}
+                  </button>
+                </div>
+                <p className="text-xs text-zinc-700 mt-1.5">Partagez ce code pour inviter des collaborateurs.</p>
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 mb-2 block uppercase tracking-wider">Graphistes ({project.artists.length})</label>
+                <div className="space-y-1.5 mb-3 max-h-44 overflow-y-auto">
+                  {project.artists.length===0&&<p className="text-xs text-zinc-700 italic px-1">Aucun graphiste</p>}
+                  {project.artists.map(a=>(
+                    <div key={a} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 group">
+                      <span className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-xs text-zinc-400">{a[0].toUpperCase()}</span>
+                      <span className="text-sm text-zinc-300 flex-1">{a}</span>
+                      <button onClick={()=>removeArtist(a)} className="text-zinc-700 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all text-sm">✕</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input value={newArtist} onChange={e=>setNewArtist(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addArtist()} placeholder="Nom du graphiste…" autoFocus
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
+                  <button onClick={addArtist} className="px-3 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors">+</button>
+                </div>
+              </div>
+              <div className="border-t border-zinc-800 pt-4">
+                <label className="text-xs text-zinc-500 mb-2 block uppercase tracking-wider">Affichage</label>
+                <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800">
+                  <span className="text-sm text-zinc-300">Colonne temps estimé</span>
+                  <button
+                    onClick={() => onUpdateProject({ ...project, showEstimatedTime: !(project.showEstimatedTime !== false) })}
+                    className="relative w-10 h-5 rounded-full transition-colors flex-shrink-0"
+                    style={{ background: project.showEstimatedTime !== false ? '#2563eb' : '#27272a' }}>
+                    <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                      style={{ left: project.showEstimatedTime !== false ? '22px' : '2px' }}/>
+                  </button>
+                </div>
+              </div>
+              {canManage && (
+                <div className="border-t border-zinc-800 pt-4 flex gap-2">
+                  <button onClick={()=>{onClose();onArchive();}} className="flex-1 py-2 rounded-xl border border-zinc-800 text-xs text-zinc-600 hover:text-zinc-300 hover:border-zinc-700 transition-colors">
+                    {project.archived ? '↺ Restaurer' : '📦 Archiver'}
+                  </button>
+                  <button onClick={()=>{onClose();onDelete();}} className="flex-1 py-2 rounded-xl border border-red-900/50 text-xs text-red-900 hover:text-red-400 hover:border-red-800 transition-colors">
+                    🗑 Supprimer
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="px-5 pb-5"><button onClick={onClose} className="w-full py-2.5 rounded-xl border border-zinc-800 text-sm text-zinc-500 hover:text-zinc-300 hover:border-zinc-700 transition-colors">Fermer</button></div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── LoadingScreen ────────────────────────────────────────────────────────
+    function LoadingScreen({ message = 'Chargement…' }) {
+      return (
+        <div className="fixed inset-0 flex flex-col items-center justify-center gap-4" style={{ background:'#111' }}>
+          <div className="text-4xl spinner">🎬</div>
+          <p className="text-zinc-600 text-sm">{message}</p>
+        </div>
+      );
+    }
+
+    // ─── ProfileSetupModal ────────────────────────────────────────────────────
+    function ProfileSetupModal({ onSave }) {
+      const [name, setName] = useState('');
+      const [loading, setLoading] = useState(false);
+      const submit = async () => {
+        if (!name.trim() || loading) return;
+        setLoading(true);
+        await onSave({ name: name.trim() });
+      };
+      return (
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ background:'#111' }}>
+          <div className="w-full max-w-xs">
+            <div className="text-center mb-8">
+              <div className="text-5xl mb-4">🎬</div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">VFX Breakdown</h1>
+              <p className="text-zinc-600 text-sm mt-2">Entrez votre prénom pour commencer</p>
+            </div>
+            <input value={name} onChange={e=>setName(e.target.value)} placeholder="Votre prénom" autoFocus
+              onKeyDown={e=>e.key==='Enter'&&submit()}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white text-center text-lg outline-none focus:border-zinc-600 placeholder-zinc-700 mb-4"/>
+            <button onClick={submit} disabled={!name.trim()||loading}
+              className="w-full py-3 rounded-xl bg-white text-black font-semibold hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+              {loading ? '…' : 'Commencer'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── JoinProjectModal ─────────────────────────────────────────────────────
+    function JoinProjectModal({ uid, onClose }) {
+      const [code, setCode] = useState('');
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [success, setSuccess] = useState(false);
+
+      const join = async () => {
+        const trimmed = code.trim().toUpperCase();
+        if (!trimmed) return;
+        setLoading(true); setError('');
+        try {
+          const snap = await db.collection('projects').where('inviteCode', '==', trimmed).limit(1).get();
+          if (snap.empty) { setError('Code invalide — vérifie l\'orthographe'); setLoading(false); return; }
+          const doc = snap.docs[0];
+          const data = doc.data();
+          if ((data.memberUids || []).includes(uid)) {
+            setError('Vous êtes déjà membre de ce projet'); setLoading(false); return;
+          }
+          await doc.ref.update({ memberUids: firebase.firestore.FieldValue.arrayUnion(uid) });
+          setSuccess(true);
+          setTimeout(onClose, 1500);
+        } catch(e) {
+          setError('Erreur : ' + e.message); setLoading(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.8)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl w-full max-w-sm p-6" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <h2 className="text-base font-semibold text-white mb-1">Rejoindre un projet</h2>
+            <p className="text-xs text-zinc-600 mb-5">Entrez le code partagé par votre superviseur</p>
+            {success ? (
+              <div className="text-center py-6">
+                <div className="text-4xl mb-3">✅</div>
+                <p className="text-sm text-green-400 font-medium">Projet rejoint !</p>
+              </div>
+            ) : (
+              <>
+                <input value={code} onChange={e=>setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))}
+                  maxLength={6} placeholder="ABC123" autoFocus onKeyDown={e=>e.key==='Enter'&&join()}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-white font-mono text-3xl text-center outline-none focus:border-zinc-500 tracking-widest mb-3"/>
+                {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+                <div className="flex gap-3">
+                  <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-sm text-zinc-500 hover:text-zinc-300 transition-colors">Annuler</button>
+                  <button onClick={join} disabled={code.length < 4 || loading}
+                    className="flex-1 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 disabled:opacity-30 transition-colors">
+                    {loading ? '…' : 'Rejoindre'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── AdminLoginModal ──────────────────────────────────────────────────────
+    function AdminLoginModal({ onClose }) {
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      const login = async () => {
+        if (!email || !password || loading) return;
+        setLoading(true); setError('');
+        try {
+          const cred = await auth.signInWithEmailAndPassword(email, password);
+          const userDoc = await db.collection('users').doc(cred.user.uid).get();
+          if (!userDoc.exists || !userDoc.data().isAdmin) {
+            await auth.signOut();
+            await auth.signInAnonymously();
+            setError('Accès refusé — ce compte n\'a pas les droits admin');
+            setLoading(false);
+            return;
+          }
+          onClose();
+        } catch(e) {
+          setError('Identifiants incorrects');
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.85)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl w-full max-w-xs p-6" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <div className="text-center mb-5">
+              <div className="text-3xl mb-2">🔐</div>
+              <h2 className="text-base font-semibold text-white">Connexion Admin</h2>
+              <p className="text-xs text-zinc-600 mt-1">Accès super administrateur</p>
+            </div>
+            <div className="space-y-3 mb-4">
+              <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="Email" autoFocus
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
+              <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="Mot de passe"
+                onKeyDown={e=>e.key==='Enter'&&login()}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
+            </div>
+            {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+            <div className="flex gap-3">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-sm text-zinc-500 hover:text-zinc-300 transition-colors">Annuler</button>
+              <button onClick={login} disabled={!email||!password||loading}
+                className="flex-1 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 disabled:opacity-30 transition-colors">
+                {loading ? '…' : 'Connexion'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── ProjectPage ──────────────────────────────────────────────────────────
+    function ProjectPage({ projectId, currentUser, onBack, fontSize, setFontSize }) {
+      const [project, setProject] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [view, setView] = useState('table');
+      const [search, setSearch] = useState('');
+      const [statusFilter, setStatusFilter] = useState('all');
+      const [showAddShots, setShowAddShots] = useState(false);
+      const [showSettings, setShowSettings] = useState(false);
+      const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | error
+      // Notes en cours de frappe — override local avant écriture Firestore
+      const [pendingNotes, setPendingNotes] = useState({});
+      const [pendingProjectNotes, setPendingProjectNotes] = useState(null);
+
+      // Ref toujours à jour (évite stale closures dans les handlers)
+      const projectRef = useRef(null);
+      const histRef = useRef([]);
+      const futRef = useRef([]);
+      const debounceRef = useRef({});
+      const projectNotesDebounce = useRef(null);
+
+      // ── Sync temps réel via onSnapshot ────────────────────────────────────
+      useEffect(() => {
+        const unsub = db.collection('projects').doc(projectId).onSnapshot(snap => {
+          if (!snap.exists) { onBack(); return; }
+          const data = { id: snap.id, ...snap.data() };
+          projectRef.current = data;
+          setProject(data);
+          setLoading(false);
+        }, err => {
+          console.error('Project snapshot error:', err);
+          setLoading(false);
+        });
+        return unsub; // Nettoyage du listener quand on quitte le projet
+      }, [projectId]);
+
+      // ── Écriture Firestore ─────────────────────────────────────────────────
+      const writeToFirestore = p => {
+        const { id, ...data } = p;
+        setSaveStatus('saving');
+        return db.collection('projects').doc(id).update(data)
+          .then(() => setSaveStatus('idle'))
+          .catch(err => {
+            console.error('Firestore write error:', err);
+            setSaveStatus('error');
+            setTimeout(() => setSaveStatus('idle'), 4000);
+          });
+      };
+
+      const pushHistory = () => {
+        if (!projectRef.current) return;
+        histRef.current = [...histRef.current.slice(-49), projectRef.current.shots];
+        futRef.current = [];
+      };
+
+      // ── updateShot ─────────────────────────────────────────────────────────
+      const updateShot = async (shotId, updates) => {
+        const p = projectRef.current;
+        if (!p) return;
+        const shot = p.shots.find(s => s.id === shotId);
+        if (!shot) return;
+
+        const isNotesOnly = Object.keys(updates).length === 1 && 'notes' in updates;
+        if (!isNotesOnly) pushHistory();
+
+        let retakes = shot.retakes || [];
+        if (updates.status && isRetake(shot.status, updates.status)) {
+          retakes = [...retakes, { id: genId(), notes: shot.notes }];
+        }
+
+        if (updates.thumbnail?.startsWith?.('data:')) {
+          updates.thumbnail = await compressImage(updates.thumbnail, 700, 450, 0.7);
+        }
+        if (updates.redpen?.startsWith?.('data:')) {
+          updates.redpen = await compressImage(updates.redpen, 500, 350, 0.7);
+        }
+
+        if (isNotesOnly) {
+          // Affichage immédiat local, écriture Firestore différée
+          setPendingNotes(prev => ({ ...prev, [shotId]: updates.notes }));
+          clearTimeout(debounceRef.current[shotId]);
+          debounceRef.current[shotId] = setTimeout(() => {
+            const cur = projectRef.current;
+            if (!cur) return;
+            const newShots = cur.shots.map(s => s.id === shotId ? { ...s, notes: updates.notes } : s);
+            writeToFirestore({ ...cur, shots: newShots });
+            // On laisse onSnapshot effacer pendingNotes naturellement
+            setPendingNotes(prev => { const n = {...prev}; delete n[shotId]; return n; });
+          }, 800);
+        } else {
+          // Écriture directe → onSnapshot mettra à jour l'UI
+          const newShots = p.shots.map(s => s.id === shotId ? { ...s, ...updates, retakes } : s);
+          writeToFirestore({ ...p, shots: newShots });
+        }
+      };
+
+      const addArtistAndAssign = (name, shotId) => {
+        const p = projectRef.current; if (!p) return;
+        pushHistory();
+        const newArtists = p.artists.includes(name) ? p.artists : [...p.artists, name];
+        const newShots = p.shots.map(s => s.id === shotId ? { ...s, artist: name } : s);
+        writeToFirestore({ ...p, artists: newArtists, shots: newShots });
+      };
+
+      const addArtist = name => {
+        const p = projectRef.current; if (!p || p.artists.includes(name)) return;
+        writeToFirestore({ ...p, artists: [...p.artists, name] });
+      };
+
+      const deleteShot = shotId => {
+        const p = projectRef.current; if (!p) return;
+        pushHistory();
+        writeToFirestore({ ...p, shots: p.shots.filter(s => s.id !== shotId) });
+      };
+
+      const addShots = newShots => {
+        const p = projectRef.current; if (!p) return;
+        pushHistory();
+        const existing = new Set(p.shots.map(s => s.number));
+        const toAdd = newShots.filter(s => !existing.has(s.number)).map(s => ({ ...s, id: genId() }));
+        writeToFirestore({ ...p, shots: [...p.shots, ...toAdd] });
+        setShowAddShots(false);
+      };
+
+      const updateProjectNotes = value => {
+        setPendingProjectNotes(value);
+        clearTimeout(projectNotesDebounce.current);
+        projectNotesDebounce.current = setTimeout(() => {
+          const p = projectRef.current; if (!p) return;
+          writeToFirestore({ ...p, projectNotes: value });
+          setPendingProjectNotes(null);
+        }, 800);
+      };
+
+      const archiveProject = async () => {
+        const p = projectRef.current;
+        await db.collection('projects').doc(p.id).update({ archived: !p.archived });
+        onBack();
+      };
+
+      const deleteProject = async () => {
+        const p = projectRef.current;
+        if (!window.confirm(`Supprimer "${p?.name}" ? Cette action est irréversible.`)) return;
+        await db.collection('projects').doc(p.id).delete();
+        onBack();
+      };
+
+      // ── Undo / Redo clavier ────────────────────────────────────────────────
+      useEffect(() => {
+        const handler = e => {
+          if (!(e.metaKey || e.ctrlKey)) return;
+          const p = projectRef.current; if (!p) return;
+          if (e.key === 'z' && !e.shiftKey) {
+            e.preventDefault();
+            if (!histRef.current.length) return;
+            const prev = histRef.current[histRef.current.length - 1];
+            futRef.current = [p.shots, ...futRef.current.slice(0, 49)];
+            histRef.current = histRef.current.slice(0, -1);
+            writeToFirestore({ ...p, shots: prev });
+          } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
+            e.preventDefault();
+            if (!futRef.current.length) return;
+            const next = futRef.current[0];
+            histRef.current = [...histRef.current.slice(-49), p.shots];
+            futRef.current = futRef.current.slice(1);
+            writeToFirestore({ ...p, shots: next });
+          }
+        };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+      }, []);
+
+      if (loading || !project) return <LoadingScreen message="Chargement du projet…" />;
+
+      // Fusion état Firestore + notes locales en cours de frappe
+      const displayShots = project.shots.map(s =>
+        pendingNotes[s.id] !== undefined ? { ...s, notes: pendingNotes[s.id] } : s
+      );
+      const displayProjectNotes = pendingProjectNotes !== null ? pendingProjectNotes : (project.projectNotes || '');
+
+      const progress = getProgress(displayShots);
+      const total = displayShots.length;
+      const filtered = displayShots.filter(s => {
+        const q = search.toLowerCase();
+        return (!q || s.number.toLowerCase().includes(q) || (s.notes||'').toLowerCase().includes(q) || (s.artist||'').toLowerCase().includes(q))
+          && (statusFilter === 'all' || s.status === statusFilter);
+      });
+      const canManage = currentUser.isAdmin || project.createdBy === currentUser.uid;
+
+      return (
+        <div className="min-h-screen flex flex-col" style={{ background:'#111' }}>
+          {showAddShots && <AddShotsModal onClose={()=>setShowAddShots(false)} onAdd={addShots}/>}
+          {showSettings && (
+            <SettingsModal
+              project={project}
+              onClose={()=>setShowSettings(false)}
+              onUpdateProject={p=>writeToFirestore(p)}
+              onArchive={archiveProject}
+              onDelete={deleteProject}
+              canManage={canManage}
+            />
+          )}
+
+          {/* Header */}
+          <div className="border-b border-zinc-900 px-4 py-3 sticky top-0 z-10 flex-shrink-0" style={{ background:'#111' }}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={onBack} className="text-zinc-600 hover:text-white transition-colors text-sm flex-shrink-0">← Projets</button>
+              <span className="text-zinc-800">/</span>
+              <h1 className="text-sm font-semibold text-white truncate flex-shrink-0" style={{ maxWidth:'min(280px,35vw)' }}>{project.name}</h1>
+              <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+                {saveStatus === 'saving' && <span className="text-xs text-zinc-600">Sauvegarde…</span>}
+                {saveStatus === 'error' && <span className="text-xs font-medium" style={{color:'#f87171'}}>⚠ Erreur de sauvegarde</span>}
+                <FontSizeSlider value={fontSize} onChange={setFontSize}/>
+                <ProjectHeaderStats shots={displayShots}/>
+                <button onClick={()=>setShowSettings(true)} className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-500 hover:text-white hover:border-zinc-600 transition-colors" title="Paramètres">⚙</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Toolbar */}
+          <div className="px-4 py-2.5 border-b border-zinc-900/60 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative" style={{ minWidth:180, flex:'1 1 180px' }}>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 text-sm">⌕</span>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher plan, artiste, note…"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-8 py-1.5 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
+                {search && <button onClick={()=>setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400 text-xs">✕</button>}
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                <button onClick={()=>setStatusFilter('all')} className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${statusFilter==='all'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>Tous ({total})</button>
+                {STATUSES.map(s => (
+                  <button key={s.id} onClick={()=>setStatusFilter(statusFilter===s.id?'all':s.id)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${statusFilter===s.id?'border-current':'border-transparent text-zinc-600 hover:text-zinc-400'}`}
+                    style={statusFilter===s.id?{background:s.bg,color:s.color,borderColor:s.border}:{}}>
+                    {s.label} ({progress[s.id]||0})
+                  </button>
+                ))}
+              </div>
+              <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+                <div className="flex rounded-lg overflow-hidden border border-zinc-800">
+                  <button onClick={()=>setView('table')} className={`px-3 py-1.5 text-xs transition-colors ${view==='table'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>☰ Tableau</button>
+                  <button onClick={()=>setView('kanban')} className={`px-3 py-1.5 text-xs transition-colors ${view==='kanban'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>⬛ Kanban</button>
+                  <button onClick={()=>setView('notes')} className={`px-3 py-1.5 text-xs transition-colors ${view==='notes'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>📝 Notes</button>
+                </div>
+                <button onClick={()=>setShowAddShots(true)} className="px-4 py-1.5 rounded-lg bg-white text-black text-xs font-semibold hover:bg-zinc-200 transition-colors whitespace-nowrap">+ Ajouter des plans</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="px-4 py-4 flex-1 overflow-auto">
+            {view === 'notes' ? (
+              <ProjectNotes notes={displayProjectNotes} onChange={updateProjectNotes}/>
+            ) : (
+              <>
+                {filtered.length === 0 && search && <div className="text-center py-10 text-zinc-700 text-sm">Aucun résultat pour <span className="text-zinc-500">"{search}"</span></div>}
+                {view === 'table'
+                  ? <ShotTable shots={filtered} artists={project.artists} onUpdateShot={updateShot} onAddArtist={addArtist} onAddArtistAndAssign={addArtistAndAssign} onDeleteShot={deleteShot} fontSize={fontSize} showEstimatedTime={project.showEstimatedTime !== false}/>
+                  : <KanbanBoard shots={filtered} artists={project.artists} onUpdateShot={updateShot}/>
+                }
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── HomePage ─────────────────────────────────────────────────────────────
+    function HomePage({ currentUser, onSelectProject, onOpenAdminLogin, fontSize, setFontSize }) {
+      const [projects, setProjects] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [showCreate, setShowCreate] = useState(false);
+      const [showJoin, setShowJoin] = useState(false);
+      const [showArchived, setShowArchived] = useState(false);
+
+      useEffect(() => {
+        // Admin sees all projects; regular users see only their projects
+        const query = currentUser.isAdmin
+          ? db.collection('projects')
+          : db.collection('projects').where('memberUids', 'array-contains', currentUser.uid);
+
+        const unsub = query.onSnapshot(snap => {
+          const projs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          // Sort by name client-side
+          projs.sort((a, b) => a.name.localeCompare(b.name));
+          setProjects(projs);
+          setLoading(false);
+        }, err => {
+          console.error('Firestore error:', err);
+          setLoading(false);
+        });
+        return unsub;
+      }, [currentUser.uid, currentUser.isAdmin]);
+
+      const createProject = async ({ name }) => {
+        const inviteCode = genCode();
+        await db.collection('projects').add({
+          name,
+          inviteCode,
+          archived: false,
+          artists: [],
+          memberUids: [currentUser.uid],
+          shots: [],
+          createdBy: currentUser.uid,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        setShowCreate(false);
+      };
+
+      const archiveProject = async (projectId, archived) => {
+        await db.collection('projects').doc(projectId).update({ archived: !archived });
+      };
+
+      const deleteProject = async (projectId, name) => {
+        if (!window.confirm(`Supprimer "${name}" ? Cette action est irréversible.`)) return;
+        await db.collection('projects').doc(projectId).delete();
+      };
+
+      const active = projects.filter(p => !p.archived);
+      const archived = projects.filter(p => p.archived);
+
+      const ProjectCard = ({ project }) => {
+        const progress = getProgress(project.shots || []);
+        const total = (project.shots || []).length;
+        const approvedPct = total ? Math.round((progress.approved / total) * 100) : 0;
+        const canDelete = currentUser.isAdmin || project.createdBy === currentUser.uid;
+        return (
+          <div className="rounded-2xl border border-zinc-800 hover:border-zinc-600 transition-all cursor-pointer p-5 group flex flex-col gap-4" style={{ background:'#1a1a1a' }}
+            onClick={()=>onSelectProject(project.id)}>
+            <div className="flex items-start justify-between gap-3">
+              <h3 className="font-semibold text-white leading-snug min-w-0 flex-1">{project.name}</h3>
+              <div className="flex-shrink-0 text-right">
+                <div className="text-3xl font-black text-white leading-none">{approvedPct}<span className="text-lg font-semibold text-zinc-600">%</span></div>
+              </div>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden bg-zinc-900 flex">
+              {STATUSES.map(s => { const p = total ? ((progress[s.id]||0)/total)*100 : 0; return p>0 ? <div key={s.id} style={{ width:`${p}%`,background:s.color }} className="h-full"/> : null; })}
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-zinc-700">{total} plan{total>1?'s':''}</span>
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>archiveProject(project.id, project.archived)} className="text-xs text-zinc-600 hover:text-zinc-300 px-2 py-1 rounded hover:bg-zinc-800 transition-colors">
+                  {project.archived ? 'Restaurer' : 'Archiver'}
+                </button>
+                {canDelete && (
+                  <button onClick={()=>deleteProject(project.id, project.name)} className="text-xs text-red-900 hover:text-red-400 px-2 py-1 rounded hover:bg-zinc-800 transition-colors">Supprimer</button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      if (loading) return <LoadingScreen message="Chargement des projets…" />;
+
+      return (
+        <div className="min-h-screen" style={{ background:'#111' }}>
+          {showCreate && <CreateProjectModal onClose={()=>setShowCreate(false)} onCreate={createProject}/>}
+          {showJoin && <JoinProjectModal uid={currentUser.uid} onClose={()=>setShowJoin(false)}/>}
+
+          <div className="border-b border-zinc-900 px-4 py-4">
+            <div className="max-w-6xl mx-auto flex items-center gap-3">
+              <div>
+                <h1 className="font-bold text-white tracking-tight">VFX Breakdown</h1>
+                <p className="text-xs text-zinc-600 mt-0.5">
+                  {currentUser.name ? `Bonjour, ${currentUser.name}` : 'Bienvenue'}
+                  {currentUser.isAdmin && <span className="ml-2 font-bold" style={{ color:'#f59e0b' }}>★ Admin</span>}
+                  {' · '}{active.length} projet{active.length>1?'s':''} actif{active.length>1?'s':''}
+                  {archived.length > 0 && ` · ${archived.length} archivé${archived.length>1?'s':''}`}
+                </p>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <FontSizeSlider value={fontSize} onChange={setFontSize}/>
+                <button onClick={()=>setShowJoin(true)} className="px-3 py-2 rounded-xl border border-zinc-800 text-zinc-400 text-sm hover:border-zinc-600 hover:text-white transition-colors whitespace-nowrap">↗ Rejoindre</button>
+                <button onClick={()=>setShowCreate(true)} className="px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors whitespace-nowrap">+ Nouveau</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-4 py-6 max-w-6xl mx-auto">
+            {active.length === 0 ? (
+              <div className="text-center py-24">
+                <div className="text-5xl mb-4">🎬</div>
+                <p className="text-sm text-zinc-500 font-medium mb-2">Aucun projet actif</p>
+                <p className="text-xs text-zinc-700 mb-8">Créez un nouveau projet ou rejoignez-en un avec un code d'invitation</p>
+                <div className="flex gap-3 justify-center">
+                  <button onClick={()=>setShowJoin(true)} className="px-5 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 text-sm hover:border-zinc-600 hover:text-white transition-colors">↗ Rejoindre un projet</button>
+                  <button onClick={()=>setShowCreate(true)} className="px-5 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors">Créer un projet</button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                {active.map(p => <ProjectCard key={p.id} project={p}/>)}
+              </div>
+            )}
+            {archived.length > 0 && (
+              <div className="mt-10">
+                <button onClick={()=>setShowArchived(!showArchived)} className="text-xs text-zinc-700 hover:text-zinc-500 transition-colors flex items-center gap-1.5 mb-3">
+                  {showArchived ? '▾' : '▸'} Archives ({archived.length})
+                </button>
+                {showArchived && (
+                  <div className="grid gap-4 opacity-50" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                    {archived.map(p => <ProjectCard key={p.id} project={p}/>)}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="mt-16 text-center">
+              <button onClick={onOpenAdminLogin} className="text-xs text-zinc-800 hover:text-zinc-600 transition-colors">Administration</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── App ──────────────────────────────────────────────────────────────────
+    function App() {
+      // authState: 'loading' | 'needsProfile' | 'ready'
+      const [authState, setAuthState] = useState('loading');
+      const [currentUser, setCurrentUser] = useState(null);
+      const [showAdminLogin, setShowAdminLogin] = useState(false);
+      const [selectedProjectId, setSelectedProjectId] = useState(null);
+      const [fontSize, setFontSize] = useState(() => { try { return Number(localStorage.getItem('vfx_fontsize')) || 14; } catch { return 14; } });
+
+      useEffect(() => {
+        const unsub = auth.onAuthStateChanged(async user => {
+          if (!user) {
+            try { await auth.signInAnonymously(); } catch(e) { console.error('Anonymous auth failed:', e); }
+            return;
+          }
+          try {
+            const userDoc = await db.collection('users').doc(user.uid).get();
+            if (!userDoc.exists) {
+              // New user — needs to set up profile
+              setCurrentUser({ uid: user.uid, name: '', isAdmin: false });
+              setAuthState('needsProfile');
+            } else {
+              setCurrentUser({ uid: user.uid, ...userDoc.data() });
+              setAuthState('ready');
+            }
+          } catch(e) {
+            console.error('User doc fetch error:', e);
+            setCurrentUser({ uid: user.uid, name: '', isAdmin: false });
+            setAuthState('needsProfile');
+          }
+        });
+        return unsub;
+      }, []);
+
+      useEffect(() => { try { localStorage.setItem('vfx_fontsize', fontSize); } catch {} }, [fontSize]);
+
+      const handleProfileSave = async ({ name }) => {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
+        try {
+          await db.collection('users').doc(uid).set({ name, isAdmin: false });
+          setCurrentUser({ uid, name, isAdmin: false });
+          setAuthState('ready');
+        } catch(e) {
+          console.error('Profile save error:', e);
+        }
+      };
+
+      if (authState === 'loading') return <LoadingScreen />;
+      if (authState === 'needsProfile') return <ProfileSetupModal onSave={handleProfileSave} />;
+
+      return (
+        <>
+          {showAdminLogin && <AdminLoginModal onClose={() => setShowAdminLogin(false)} />}
+          {selectedProjectId ? (
+            <ProjectPage
+              projectId={selectedProjectId}
+              currentUser={currentUser}
+              onBack={() => setSelectedProjectId(null)}
+              fontSize={fontSize}
+              setFontSize={setFontSize}
+            />
+          ) : (
+            <HomePage
+              currentUser={currentUser}
+              onSelectProject={setSelectedProjectId}
+              onOpenAdminLogin={() => setShowAdminLogin(true)}
+              fontSize={fontSize}
+              setFontSize={setFontSize}
+            />
+          )}
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
