@@ -24,6 +24,9 @@
     input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #e4e4e7; cursor: pointer; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 1s linear infinite; }
+    input.no-spinner::-webkit-inner-spin-button,
+    input.no-spinner::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input.no-spinner { -moz-appearance: textfield; }
   </style>
 </head>
 <body>
@@ -99,19 +102,19 @@
     function PieChart({ shots, size = 80 }) {
       const progress = getProgress(shots), total = shots.length;
       if (!total) return <div style={{ width:size, height:size }} className="rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center flex-shrink-0"><span className="text-zinc-700 text-xs">—</span></div>;
-      const data = STATUSES.map(s => ({ ...s, count:progress[s.id]||0 })).filter(d => d.count>0);
+      const PIE_STATUSES = STATUSES.filter(s => s.id !== 'retakeneeded');
+      const data = PIE_STATUSES.map(s => ({ ...s, count:progress[s.id]||0 })).filter(d => d.count>0);
+      const pieTotal = data.reduce((sum, d) => sum + d.count, 0) || 1;
       let cum = 0; const r = size/2;
       const paths = data.map(d => {
-        const a1=(cum/total)*2*Math.PI-Math.PI/2; cum+=d.count; const a2=(cum/total)*2*Math.PI-Math.PI/2;
+        const a1=(cum/pieTotal)*2*Math.PI-Math.PI/2; cum+=d.count; const a2=(cum/pieTotal)*2*Math.PI-Math.PI/2;
         if(data.length===1) return <circle key={d.id} cx={r} cy={r} r={r} fill={d.color}/>;
         const x1=r+r*Math.cos(a1),y1=r+r*Math.sin(a1),x2=r+r*Math.cos(a2),y2=r+r*Math.sin(a2);
-        return <path key={d.id} d={`M${r} ${r} L${x1} ${y1} A${r} ${r} 0 ${d.count/total>.5?1:0} 1 ${x2} ${y2}Z`} fill={d.color} stroke="#111" strokeWidth="1.5"/>;
+        return <path key={d.id} d={`M${r} ${r} L${x1} ${y1} A${r} ${r} 0 ${d.count/pieTotal>.5?1:0} 1 ${x2} ${y2}Z`} fill={d.color} stroke="#111" strokeWidth="1.5"/>;
       });
-      const pct = Math.round((progress.approved/total)*100);
       return (
         <div className="relative flex-shrink-0" style={{ width:size, height:size }}>
           <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>{paths}</svg>
-          <div className="absolute inset-0 flex items-center justify-center"><span className="font-bold text-white" style={{ fontSize:Math.max(9,size*.18) }}>{pct}%</span></div>
         </div>
       );
     }
@@ -122,6 +125,7 @@
       const ref = useRef(null);
       const progress = getProgress(shots), total = shots.length;
       const approvedPct = total ? Math.round((progress.approved/total)*100) : 0;
+      const totalHours = shots.reduce((sum, s) => sum + (parseFloat(s.estimatedTime) || 0), 0);
       useEffect(() => {
         const h = e => { if(ref.current&&!ref.current.contains(e.target)) setOpen(false); };
         document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h);
@@ -155,6 +159,15 @@
                 <span>{total} plan{total>1?'s':''} au total</span>
                 <span className="text-green-500 font-medium">{approvedPct}% validés</span>
               </div>
+              {totalHours > 0 && (
+                <div className="border-t border-zinc-800 px-3 py-2 flex justify-between text-xs">
+                  <span className="text-zinc-600">Temps estimé total</span>
+                  <span className="text-white font-semibold">
+                    {totalHours % 1 === 0 ? totalHours : totalHours.toFixed(1)}h
+                    <span className="ml-1.5 text-xs font-normal text-zinc-500">({(totalHours / 8) % 1 === 0 ? totalHours / 8 : (totalHours / 8).toFixed(1)}j)</span>
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -374,12 +387,13 @@
     }
 
     // ─── ShotTable ────────────────────────────────────────────────────────────
-    function ShotTable({ shots, artists, onUpdateShot, onAddArtist, onAddArtistAndAssign, onDeleteShot, fontSize=14 }) {
+    function ShotTable({ shots, artists, onUpdateShot, onAddArtist, onAddArtistAndAssign, onDeleteShot, fontSize=14, showEstimatedTime=true }) {
       const [lightbox, setLightbox] = useState(null);
       const [expandedId, setExpandedId] = useState(null);
       const [contextMenu, setContextMenu] = useState(null);
       const [confirmDelete, setConfirmDelete] = useState(null);
-      const COL_COUNT = 5;
+      const COL_COUNT = showEstimatedTime ? 6 : 5;
+      const totalEstimatedTime = shots.reduce((sum, s) => sum + (parseFloat(s.estimatedTime) || 0), 0);
       const toggle = id => setExpandedId(prev => prev === id ? null : id);
       const handleDelete = shotId => { setContextMenu(null); setConfirmDelete(shotId); };
       return (
@@ -402,6 +416,7 @@
                   <th className="pb-3 pr-3 text-xs text-zinc-600 font-medium uppercase tracking-wider" style={{ width:160 }}>Statut</th>
                   <th className="pb-3 pr-3 text-xs text-zinc-600 font-medium uppercase tracking-wider">Artiste</th>
                   <th className="pb-3 text-xs text-zinc-600 font-medium uppercase tracking-wider">Notes</th>
+                  {showEstimatedTime && <th className="pb-3 pl-3 pr-6 text-xs text-zinc-600 font-medium uppercase tracking-wider text-right" style={{ width:100 }}>Temps (h)</th>}
                 </tr>
               </thead>
               <tbody>
@@ -421,8 +436,8 @@
                             {retakes.length > 0 && (
                               <span className="text-xs px-1.5 py-0.5 rounded font-semibold flex-shrink-0" style={{ background:'#431407', color:'#fb923c' }}>{retakes.length}↩</span>
                             )}
-                            <span className="text-zinc-700 text-xs" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', display:'inline-block', transition:'transform 0.15s' }}>›</span>
                           </div>
+                          <span className="text-xs italic mt-0.5 block transition-colors" style={{ color: isOpen ? '#71717a' : '#3f3f46' }}>more</span>
                         </td>
                         <td className="py-2.5 pr-3 pt-3">
                           <StatusPill status={shot.status} onChange={s=>onUpdateShot(shot.id,{status:s})}/>
@@ -434,12 +449,37 @@
                           <AutoTextarea value={shot.notes} onChange={v=>onUpdateShot(shot.id,{notes:v})} placeholder="Ajouter une note…"
                             className="text-zinc-400 placeholder-zinc-700 hover:bg-zinc-900 focus:bg-zinc-900 rounded px-2 py-1 transition-colors focus:text-zinc-200" style={{ fontSize:'inherit' }}/>
                         </td>
+                        {showEstimatedTime && (
+                          <td className="py-1.5 pl-3 pr-2 pt-3">
+                            <input
+                              type="number" min="0" step="0.5"
+                              value={shot.estimatedTime ?? ''}
+                              onChange={e => onUpdateShot(shot.id, { estimatedTime: e.target.value === '' ? null : parseFloat(e.target.value) })}
+                              placeholder="—"
+                              className="no-spinner w-full bg-transparent text-zinc-400 placeholder-zinc-700 hover:bg-zinc-900 focus:bg-zinc-900 rounded px-2 py-1 outline-none transition-colors focus:text-zinc-200 text-right"
+                              style={{ fontSize:'inherit', width:82, marginRight:8 }}
+                            />
+                          </td>
+                        )}
                       </tr>
                       {isOpen && <ShotDetailRow shot={shot} onUpdateShot={onUpdateShot} colCount={COL_COUNT}/>}
                     </React.Fragment>
                   );
                 })}
                 {shots.length === 0 && <tr><td colSpan={COL_COUNT} className="py-16 text-center text-zinc-700 text-sm">Aucun plan trouvé</td></tr>}
+                {shots.length > 0 && showEstimatedTime && (
+                  <tr className="border-t border-zinc-800">
+                    <td colSpan={5} className="py-2 pl-2 pr-3 text-xs text-zinc-600 text-right">Total estimé</td>
+                    <td className="py-2 pl-3 pr-6 text-sm font-semibold text-right" style={{ color: totalEstimatedTime > 0 ? '#e4e4e7' : '#3f3f46' }}>
+                      {totalEstimatedTime > 0 ? (
+                        <>
+                          {totalEstimatedTime % 1 === 0 ? totalEstimatedTime : totalEstimatedTime.toFixed(1)}h
+                          <span className="ml-1.5 text-xs font-normal text-zinc-500">({(totalEstimatedTime / 8) % 1 === 0 ? totalEstimatedTime / 8 : (totalEstimatedTime / 8).toFixed(1)}j)</span>
+                        </>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -492,6 +532,21 @@
             })}
           </div>
         </>
+      );
+    }
+
+    // ─── ProjectNotes ─────────────────────────────────────────────────────────
+    function ProjectNotes({ notes, onChange }) {
+      return (
+        <div className="w-full h-full flex flex-col" style={{ minHeight:'calc(100vh - 160px)' }}>
+          <textarea
+            value={notes}
+            onChange={e => onChange(e.target.value)}
+            placeholder={"Espace libre — notes, idées, liens, todo…\n\nEcrivez ici tout ce qui concerne le projet mais n'est pas lié à un plan spécifique."}
+            className="flex-1 w-full bg-transparent text-zinc-300 placeholder-zinc-700 outline-none resize-none leading-relaxed p-2"
+            style={{ minHeight:'calc(100vh - 160px)', fontSize:14, fontFamily:'inherit' }}
+          />
+        </div>
       );
     }
 
@@ -635,6 +690,19 @@
                   <input value={newArtist} onChange={e=>setNewArtist(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addArtist()} placeholder="Nom du graphiste…" autoFocus
                     className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-zinc-600 placeholder-zinc-700"/>
                   <button onClick={addArtist} className="px-3 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 transition-colors">+</button>
+                </div>
+              </div>
+              <div className="border-t border-zinc-800 pt-4">
+                <label className="text-xs text-zinc-500 mb-2 block uppercase tracking-wider">Affichage</label>
+                <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800">
+                  <span className="text-sm text-zinc-300">Colonne temps estimé</span>
+                  <button
+                    onClick={() => onUpdateProject({ ...project, showEstimatedTime: !(project.showEstimatedTime !== false) })}
+                    className="relative w-10 h-5 rounded-full transition-colors flex-shrink-0"
+                    style={{ background: project.showEstimatedTime !== false ? '#2563eb' : '#27272a' }}>
+                    <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                      style={{ left: project.showEstimatedTime !== false ? '22px' : '2px' }}/>
+                  </button>
                 </div>
               </div>
               {canManage && (
@@ -817,12 +885,14 @@
       const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | error
       // Notes en cours de frappe — override local avant écriture Firestore
       const [pendingNotes, setPendingNotes] = useState({});
+      const [pendingProjectNotes, setPendingProjectNotes] = useState(null);
 
       // Ref toujours à jour (évite stale closures dans les handlers)
       const projectRef = useRef(null);
       const histRef = useRef([]);
       const futRef = useRef([]);
       const debounceRef = useRef({});
+      const projectNotesDebounce = useRef(null);
 
       // ── Sync temps réel via onSnapshot ────────────────────────────────────
       useEffect(() => {
@@ -927,6 +997,16 @@
         setShowAddShots(false);
       };
 
+      const updateProjectNotes = value => {
+        setPendingProjectNotes(value);
+        clearTimeout(projectNotesDebounce.current);
+        projectNotesDebounce.current = setTimeout(() => {
+          const p = projectRef.current; if (!p) return;
+          writeToFirestore({ ...p, projectNotes: value });
+          setPendingProjectNotes(null);
+        }, 800);
+      };
+
       const archiveProject = async () => {
         const p = projectRef.current;
         await db.collection('projects').doc(p.id).update({ archived: !p.archived });
@@ -971,6 +1051,7 @@
       const displayShots = project.shots.map(s =>
         pendingNotes[s.id] !== undefined ? { ...s, notes: pendingNotes[s.id] } : s
       );
+      const displayProjectNotes = pendingProjectNotes !== null ? pendingProjectNotes : (project.projectNotes || '');
 
       const progress = getProgress(displayShots);
       const total = displayShots.length;
@@ -1034,6 +1115,7 @@
                 <div className="flex rounded-lg overflow-hidden border border-zinc-800">
                   <button onClick={()=>setView('table')} className={`px-3 py-1.5 text-xs transition-colors ${view==='table'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>☰ Tableau</button>
                   <button onClick={()=>setView('kanban')} className={`px-3 py-1.5 text-xs transition-colors ${view==='kanban'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>⬛ Kanban</button>
+                  <button onClick={()=>setView('notes')} className={`px-3 py-1.5 text-xs transition-colors ${view==='notes'?'bg-zinc-800 text-white':'text-zinc-600 hover:text-zinc-400'}`}>📝 Notes</button>
                 </div>
                 <button onClick={()=>setShowAddShots(true)} className="px-4 py-1.5 rounded-lg bg-white text-black text-xs font-semibold hover:bg-zinc-200 transition-colors whitespace-nowrap">+ Ajouter des plans</button>
               </div>
@@ -1042,11 +1124,17 @@
 
           {/* Content */}
           <div className="px-4 py-4 flex-1 overflow-auto">
-            {filtered.length === 0 && search && <div className="text-center py-10 text-zinc-700 text-sm">Aucun résultat pour <span className="text-zinc-500">"{search}"</span></div>}
-            {view === 'table'
-              ? <ShotTable shots={filtered} artists={project.artists} onUpdateShot={updateShot} onAddArtist={addArtist} onAddArtistAndAssign={addArtistAndAssign} onDeleteShot={deleteShot} fontSize={fontSize}/>
-              : <KanbanBoard shots={filtered} artists={project.artists} onUpdateShot={updateShot}/>
-            }
+            {view === 'notes' ? (
+              <ProjectNotes notes={displayProjectNotes} onChange={updateProjectNotes}/>
+            ) : (
+              <>
+                {filtered.length === 0 && search && <div className="text-center py-10 text-zinc-700 text-sm">Aucun résultat pour <span className="text-zinc-500">"{search}"</span></div>}
+                {view === 'table'
+                  ? <ShotTable shots={filtered} artists={project.artists} onUpdateShot={updateShot} onAddArtist={addArtist} onAddArtistAndAssign={addArtistAndAssign} onDeleteShot={deleteShot} fontSize={fontSize} showEstimatedTime={project.showEstimatedTime !== false}/>
+                  : <KanbanBoard shots={filtered} artists={project.artists} onUpdateShot={updateShot}/>
+                }
+              </>
+            )}
           </div>
         </div>
       );
