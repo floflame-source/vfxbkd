@@ -352,15 +352,38 @@
       );
     }
 
+    // ─── RenameModal ──────────────────────────────────────────────────────────
+    function RenameModal({ currentNumber, onConfirm, onClose }) {
+      const [value, setValue] = useState(currentNumber);
+      const submit = () => { if (value.trim()) onConfirm(value.trim().toUpperCase()); };
+      return (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,0.75)' }} onClick={onClose}>
+          <div className="rounded-2xl border border-zinc-800 shadow-2xl p-6 max-w-xs w-full" style={{ background:'#161618' }} onClick={e=>e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-white mb-4">Renommer le plan</h3>
+            <input value={value} onChange={e=>setValue(e.target.value.toUpperCase())} onKeyDown={e=>e.key==='Enter'&&submit()} autoFocus
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none focus:border-zinc-600 mb-4"/>
+            <div className="flex gap-3">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-sm text-zinc-500 hover:text-zinc-300 transition-colors">Annuler</button>
+              <button onClick={submit} disabled={!value.trim()} className="flex-1 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 disabled:opacity-30 transition-colors">Renommer</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // ─── ContextMenu ──────────────────────────────────────────────────────────
-    function ContextMenu({ x, y, onDelete, onClose }) {
-      const menuW = 180, menuH = 48;
+    function ContextMenu({ x, y, onDelete, onRename, onClose }) {
+      const menuW = 190, menuH = 90;
       const left = Math.min(x, window.innerWidth  - menuW - 8);
       const top  = Math.min(y, window.innerHeight - menuH - 8);
       return ReactDOM.createPortal(
         <>
           <div style={{ position:'fixed', inset:0, zIndex:9998 }} onClick={onClose} onContextMenu={e => { e.preventDefault(); onClose(); }} />
           <div style={{ position:'fixed', left, top, zIndex:9999, background:'#1c1c1e', border:'1px solid #27272a', borderRadius:10, overflow:'hidden', boxShadow:'0 8px 32px rgba(0,0,0,0.6)', minWidth:menuW }}>
+            <button onClick={e => { e.stopPropagation(); onRename(); }} className="w-full text-left px-4 py-2.5 text-sm flex items-center gap-2.5 hover:bg-zinc-800 transition-colors text-zinc-300">
+              <span>✏️</span> Renommer le plan
+            </button>
+            <div className="border-t border-zinc-800"/>
             <button onClick={e => { e.stopPropagation(); onDelete(); }} className="w-full text-left px-4 py-2.5 text-sm flex items-center gap-2.5 hover:bg-zinc-800 transition-colors" style={{ color:'#f87171' }}>
               <span>🗑</span> Supprimer le plan
             </button>
@@ -392,14 +415,23 @@
       const [expandedId, setExpandedId] = useState(null);
       const [contextMenu, setContextMenu] = useState(null);
       const [confirmDelete, setConfirmDelete] = useState(null);
+      const [renameTarget, setRenameTarget] = useState(null);
       const COL_COUNT = showEstimatedTime ? 6 : 5;
       const totalEstimatedTime = shots.reduce((sum, s) => sum + (parseFloat(s.estimatedTime) || 0), 0);
       const toggle = id => setExpandedId(prev => prev === id ? null : id);
       const handleDelete = shotId => { setContextMenu(null); setConfirmDelete(shotId); };
+      const handleRename = () => { setRenameTarget({ id: contextMenu.shotId, number: contextMenu.shotNumber }); setContextMenu(null); };
       return (
         <>
           {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
-          {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} onDelete={()=>handleDelete(contextMenu.shotId)} onClose={()=>setContextMenu(null)}/>}
+          {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} onDelete={()=>handleDelete(contextMenu.shotId)} onRename={handleRename} onClose={()=>setContextMenu(null)}/>}
+          {renameTarget && (
+            <RenameModal
+              currentNumber={renameTarget.number}
+              onConfirm={num => { onUpdateShot(renameTarget.id, { number: num }); setRenameTarget(null); }}
+              onClose={() => setRenameTarget(null)}
+            />
+          )}
           {confirmDelete && (
             <ConfirmModal
               message="Tu es sûr de vouloir supprimer ce plan ? Cette action est irréversible."
@@ -426,7 +458,7 @@
                   return (
                     <React.Fragment key={shot.id}>
                       <tr className={`border-b ${isOpen ? 'border-zinc-800' : 'border-zinc-900'} hover:bg-zinc-900/40 transition-colors align-top group`}
-                        onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, shotId: shot.id }); }}>
+                        onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, shotId: shot.id, shotNumber: shot.number }); }}>
                         <td className="py-2.5 pl-2 pr-3 pt-3">
                           <ThumbnailCell thumbnail={shot.thumbnail} onUpload={d=>onUpdateShot(shot.id,{thumbnail:d})} onOpenLightbox={setLightbox}/>
                         </td>
